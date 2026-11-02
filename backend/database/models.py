@@ -4,9 +4,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from config.settings import settings
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "sqllite.db"
+DB_PATH = Path(settings.SQLITE_PATH)
 
 
 def get_connection() -> sqlite3.Connection:
@@ -23,12 +24,16 @@ def init_db() -> None:
                 workflow_id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 user_query TEXT NOT NULL,
+                owner_id TEXT,
                 current_state TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(document_workflows)").fetchall()}
+        if "owner_id" not in columns:
+            conn.execute("ALTER TABLE document_workflows ADD COLUMN owner_id TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS agent_artifacts (
@@ -48,11 +53,15 @@ def init_db() -> None:
                 source_id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 source_type TEXT NOT NULL,
+                owner_id TEXT,
                 metadata TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(rag_sources)").fetchall()}
+        if "owner_id" not in columns:
+            conn.execute("ALTER TABLE rag_sources ADD COLUMN owner_id TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS rag_chunks (
@@ -70,32 +79,33 @@ def init_db() -> None:
         conn.commit()
 
 
-def create_workflow(title: str, user_query: str) -> str:
+def create_workflow(title: str, user_query: str, owner_id: str) -> str:
     workflow_id = str(uuid.uuid4())
     with get_connection() as conn:
         conn.execute(
             """
             INSERT INTO document_workflows
-            (workflow_id, title, user_query, current_state)
-            VALUES (?, ?, ?, ?)
+            (workflow_id, title, user_query, owner_id, current_state)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (workflow_id, title, user_query, "RESEARCH"),
+            (workflow_id, title, user_query, owner_id, "RESEARCH"),
         )
         conn.commit()
     return workflow_id
 
 
-def update_workflow_state(workflow_id: str, state: str) -> None:
+def update_workflow_state(workflow_id: str, state: str, owner_id: str) -> bool:
     with get_connection() as conn:
         conn.execute(
             """
             UPDATE document_workflows
             SET current_state = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE workflow_id = ?
+            WHERE workflow_id = ? AND owner_id = ?
             """,
-            (state, workflow_id),
+            (state, workflow_id, owner_id),
         )
         conn.commit()
+        return conn.total_changes > 0
 
 
 def save_artifact(
@@ -127,6 +137,7 @@ def save_artifact(
 def save_rag_source(
     title: str,
     source_type: str,
+    owner_id: str,
     metadata: dict[str, Any] | None = None,
 ) -> str:
     source_id = str(uuid.uuid4())
@@ -134,10 +145,10 @@ def save_rag_source(
         conn.execute(
             """
             INSERT INTO rag_sources
-            (source_id, title, source_type, metadata)
-            VALUES (?, ?, ?, ?)
+            (source_id, title, source_type, owner_id, metadata)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (source_id, title, source_type, json.dumps(metadata or {})),
+            (source_id, title, source_type, owner_id, json.dumps(metadata or {})),
         )
         conn.commit()
     return source_id
@@ -177,7 +188,7 @@ def get_next_vector_id() -> int:
     return int(row["next_id"])
 
 
-def get_chunks_by_vector_ids(vector_ids: list[int]) -> list[dict[str, Any]]:
+def get_chunks_by_vector_ids(vector_ids: list[int], owner_id: str | None = None) -> list[dict[str, Any]]:
     if not vector_ids:
         return []
 
@@ -198,8 +209,9 @@ def get_chunks_by_vector_ids(vector_ids: list[int]) -> list[dict[str, Any]]:
             FROM rag_chunks c
             JOIN rag_sources s ON s.source_id = c.source_id
             WHERE c.vector_id IN ({placeholders})
+            {"AND s.owner_id = ?" if owner_id else ""}
             """,
-            vector_ids,
+            [*vector_ids, owner_id] if owner_id else vector_ids,
         ).fetchall()
 
     by_vector_id = {row["vector_id"]: dict(row) for row in rows}
@@ -213,28 +225,31 @@ def get_chunks_by_vector_ids(vector_ids: list[int]) -> list[dict[str, Any]]:
     return ordered
 
 
-def list_workflows() -> list[dict[str, Any]]:
+def list_workflows(owner_id: str) -> list[dict[str, Any]]:
     with get_connection() as conn:
         rows = conn.execute(
             """
             SELECT workflow_id, title, user_query, current_state, created_at, updated_at
             FROM document_workflows
+            WHERE owner_id = ?
             ORDER BY updated_at DESC
-            """
+            """,
+            (owner_id,),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
-def get_workflow_artifacts(workflow_id: str) -> list[dict[str, Any]]:
+def get_workflow_artifacts(workflow_id: str, owner_id: str) -> list[dict[str, Any]]:
     with get_connection() as conn:
         rows = conn.execute(
             """
             SELECT artifact_id, workflow_id, agent_name, content, metadata, timestamp
-            FROM agent_artifacts
-            WHERE workflow_id = ?
+            FROM agent_artifacts a
+            JOIN document_workflows w ON w.workflow_id = a.workflow_id
+            WHERE a.workflow_id = ? AND w.owner_id = ?
             ORDER BY timestamp ASC
             """,
-            (workflow_id,),
+            (workflow_id, owner_id),
         ).fetchall()
     artifacts = [dict(row) for row in rows]
     for artifact in artifacts:

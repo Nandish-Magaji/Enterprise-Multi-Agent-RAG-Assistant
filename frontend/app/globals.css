@@ -5,11 +5,16 @@
   --foreground: #18181b;
 }
 
+html.dark {
+  --background: #09090b;
+  --foreground: #f4f4f5;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: Arial, Helvetica, sans-serif;
+  --font-mono: "Courier New", monospace;
 }
 
 html {
@@ -21,8 +26,17 @@ html {
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  font-family: Arial, Helvetica, sans-serif;
 }
+
+html.dark .bg-white { background-color: #18181b !important; }
+html.dark .bg-zinc-50 { background-color: #27272a !important; }
+html.dark .border-zinc-200,
+html.dark .border-zinc-300 { border-color: #3f3f46 !important; }
+html.dark input,
+html.dark textarea { background-color: #18181b; color: #f4f4f5; }
+html.dark .text-zinc-500,
+html.dark .text-zinc-600 { color: #a1a1aa; }
 
 button:focus-visible,
 input:focus-visible,

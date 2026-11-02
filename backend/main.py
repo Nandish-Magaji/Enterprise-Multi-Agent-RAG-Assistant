@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -8,17 +8,14 @@ from config.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-from database.models import (
-    get_source_count,
-    get_workflow_artifacts,
-    init_db,
-    list_workflows,
-    save_artifact,
-    update_workflow_state,
-)
+from database.models import get_source_count, init_db, save_artifact, update_workflow_state
 from orchestrator.research_pipeline import ResearchPipeline
-from services.gemini_service import generate_response
 from services.rag_engine import extract_text_from_upload, rag_engine
+from security.auth import get_current_user, require_reviewer
+from api.export import router as export_router
+from api.chat import router as chat_router
+from api.history import router as history_router
+from config.settings import settings
 
 load_dotenv()
 init_db()
@@ -27,17 +24,14 @@ app = FastAPI(title="Enterprise Multi-Agent RAG Assistant")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-    ],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-class ChatRequest(BaseModel):
-    message: str
+app.include_router(export_router)
+app.include_router(chat_router)
+app.include_router(history_router)
 
 
 class IngestTextRequest(BaseModel):
@@ -67,18 +61,13 @@ async def health() -> dict[str, int | str]:
     }
 
 
-@app.post("/chat")
-async def chat(request: ChatRequest) -> dict[str, str]:
-    reply = generate_response(request.message)
-    return {"response": reply}
-
-
 @app.post("/rag/ingest-text")
-async def ingest_text(request: IngestTextRequest) -> dict[str, object]:
+async def ingest_text(request: IngestTextRequest, user: dict = Depends(get_current_user)) -> dict[str, object]:
     try:
         result = rag_engine.ingest_text(
             title=request.title,
             content=request.content,
+            owner_id=user["sub"],
             source_type=request.source_type,
         )
     except ValueError as exc:
@@ -89,7 +78,7 @@ async def ingest_text(request: IngestTextRequest) -> dict[str, object]:
 
 
 @app.post("/rag/ingest-file")
-async def ingest_file(file: UploadFile = File(...)) -> dict[str, object]:
+async def ingest_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)) -> dict[str, object]:
     filename = file.filename or "uploaded-document"
     content = await file.read()
     try:
@@ -97,6 +86,7 @@ async def ingest_file(file: UploadFile = File(...)) -> dict[str, object]:
         result = rag_engine.ingest_text(
             title=filename,
             content=text,
+            owner_id=user["sub"],
             source_type=source_type,
             metadata={"filename": filename},
         )
@@ -108,10 +98,11 @@ async def ingest_file(file: UploadFile = File(...)) -> dict[str, object]:
 
 
 @app.post("/workflow/run")
-async def run_workflow(request: WorkflowRunRequest) -> dict[str, object]:
+async def run_workflow(request: WorkflowRunRequest, user: dict = Depends(get_current_user)) -> dict[str, object]:
     pipeline = ResearchPipeline()
     try:
         return pipeline.run(
+            owner_id=user["sub"],
             user_query=request.user_query,
             title=request.title,
             target_audience=request.target_audience,
@@ -129,19 +120,10 @@ async def run_workflow(request: WorkflowRunRequest) -> dict[str, object]:
         ) from exc
 
 
-@app.get("/workflows")
-async def workflows() -> dict[str, object]:
-    return {"workflows": list_workflows()}
-
-
-@app.get("/workflows/{workflow_id}/artifacts")
-async def workflow_artifacts(workflow_id: str) -> dict[str, object]:
-    return {"artifacts": get_workflow_artifacts(workflow_id)}
-
-
 @app.post("/workflow/approve")
-async def approve_workflow(request: HitlDecisionRequest) -> dict[str, str]:
-    update_workflow_state(request.workflow_id, "COMPLETED")
+async def approve_workflow(request: HitlDecisionRequest, user: dict = Depends(require_reviewer)) -> dict[str, str]:
+    if not update_workflow_state(request.workflow_id, "COMPLETED", user["sub"]):
+        raise HTTPException(status_code=404, detail="Workflow not found.")
     save_artifact(
         request.workflow_id,
         "human",
@@ -155,8 +137,9 @@ async def approve_workflow(request: HitlDecisionRequest) -> dict[str, str]:
 
 
 @app.post("/workflow/reject")
-async def reject_workflow(request: HitlDecisionRequest) -> dict[str, str]:
-    update_workflow_state(request.workflow_id, "REJECTED")
+async def reject_workflow(request: HitlDecisionRequest, user: dict = Depends(require_reviewer)) -> dict[str, str]:
+    if not update_workflow_state(request.workflow_id, "REJECTED", user["sub"]):
+        raise HTTPException(status_code=404, detail="Workflow not found.")
     save_artifact(
         request.workflow_id,
         "human",

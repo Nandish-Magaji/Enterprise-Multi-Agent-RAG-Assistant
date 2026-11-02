@@ -47,7 +47,7 @@ def generate_response(prompt: str) -> str:
     )
     response = _retry(
         lambda: client.models.generate_content(
-            model=settings.GENERATION_MODEL,
+        model=settings.GEMINI_GENERATION_MODEL,
             contents=prompt,
         )
     )
@@ -71,7 +71,7 @@ def generate_json(prompt: str) -> str:
     )
     response = _retry(
         lambda: client.models.generate_content(
-            model=settings.GENERATION_MODEL,
+            model=settings.GEMINI_GENERATION_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -112,7 +112,7 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     )
     response = _retry(
         lambda: client.models.embed_content(
-            model=settings.EMBEDDING_MODEL,
+            model=settings.GEMINI_EMBEDDING_MODEL,
             contents=texts,
             config=types.EmbedContentConfig(
                 output_dimensionality=768,
@@ -132,26 +132,25 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 def _retry(
     operation: Callable[[], Any],
 ) -> Any:
-    """
-    Retry Gemini requests using exponential backoff.
-    """
+    """Retry Gemini requests using linear backoff."""
 
-    last_error = None
+    attempts = max(1, settings.MAX_RETRIES)
+    last_error: Exception | None = None
 
-    for attempt in range(settings.MAX_RETRIES):
-
+    for attempt in range(attempts):
         try:
             return operation()
-
         except Exception as exc:
-
             last_error = exc
 
-            if attempt == settings.MAX_RETRIES - 1:
+            if attempt == attempts - 1:
                 break
 
             time.sleep(
                 settings.RETRY_DELAY_SECONDS * (attempt + 1)
             )
 
-    raise last_error
+    if last_error is not None:
+        raise last_error
+
+    raise RuntimeError("Gemini request failed without an exception.")

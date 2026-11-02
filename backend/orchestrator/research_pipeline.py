@@ -9,12 +9,14 @@ from database.models import (
 )
 from adk.executor import executor
 from services.rag_engine import build_context, rag_engine
+from tools.tavily_mcp import build_tavily_context, extract_tavily_sources
 
 logger = get_logger(__name__)
 
 class ResearchPipeline:
     def run(
         self,
+        owner_id: str,
         user_query: str,
         title: str | None = None,
         target_audience: str | None = None,
@@ -32,6 +34,7 @@ class ResearchPipeline:
             user_query=user_query,
             title=title,
             top_k=top_k,
+            owner_id=owner_id,
         )
         research_notes = self._perform_research(
             workflow_id=workflow_id,
@@ -40,6 +43,12 @@ class ResearchPipeline:
             target_audience=target_audience,
             writing_method=writing_method,
             sources=sources,
+            owner_id=owner_id,
+        )
+        web_sources = extract_tavily_sources(research_notes)
+        sources.extend(web_sources)
+        verification_context = "\n\n".join(
+            part for part in (context, build_tavily_context(web_sources)) if part
         )
         draft = self._generate_draft(
             workflow_id=workflow_id,
@@ -47,13 +56,15 @@ class ResearchPipeline:
             research_notes=research_notes,
             target_audience=target_audience,
             writing_method=writing_method,
+            owner_id=owner_id,
         )
         draft, verification, attempts = self._verify_and_correct(
             workflow_id=workflow_id,
             user_query=user_query,
-            context=context,
+            context=verification_context,
             draft=draft,
             max_retries=max_retries,
+            owner_id=owner_id,
         )
         save_artifact(
             workflow_id,
@@ -76,6 +87,7 @@ class ResearchPipeline:
         update_workflow_state(
             workflow_id,
             "EDITING",
+            owner_id,
         )
         logger.info("Running Editor Agent")
         final_document = self._edit(
@@ -93,6 +105,7 @@ class ResearchPipeline:
         update_workflow_state(
             workflow_id,
             "HITL_APPROVAL",
+            owner_id,
         )
         logger.info(
             "Workflow %s completed successfully (%s).",
@@ -117,6 +130,7 @@ class ResearchPipeline:
         context: str,
         draft: str,
         max_retries: int,
+        owner_id: str,
     ) -> tuple[str, dict[str, Any], int]:
         verification = {}
         attempts = 0
@@ -124,12 +138,14 @@ class ResearchPipeline:
             update_workflow_state(
                 workflow_id,
                 "CHECKING",
+                owner_id,
             )
             logger.info("Running Fact Checker")
             verification = self._verify(
                 context=context,
                 generated_answer=draft,
                 user_query=user_query,
+                verification_mode="general_knowledge",
             )
             if verification.get("verdict") == "PASS":
                 break
@@ -144,6 +160,7 @@ class ResearchPipeline:
             update_workflow_state(
                 workflow_id,
                 "WRITING",
+                owner_id,
             )
             draft = self._correct(
                 context=context,
@@ -157,6 +174,7 @@ class ResearchPipeline:
         user_query: str,
         title: str | None,
         top_k: int,
+        owner_id: str,
     ) -> tuple[str, str, str, list[dict]]:
         workflow_title = (
             title.strip()
@@ -166,22 +184,21 @@ class ResearchPipeline:
         workflow_id = create_workflow(
             workflow_title,
             user_query,
+            owner_id,
         )
         retrieval_results = rag_engine.search(
             user_query,
             top_k=top_k,
+            owner_id=owner_id,
         )
+
+        context = build_context(retrieval_results)
+
         if not retrieval_results:
-            update_workflow_state(
-                workflow_id,
-                "FAILED",
+            logger.info(
+                "No relevant source chunks retrieved. "
+                "Continuing without retrieved context."
             )
-            raise ValueError(
-                "No matching source material found."
-            )
-        context = build_context(
-            retrieval_results
-        )
         sources = [
             {
                 "source_id": result["source_id"],
@@ -205,10 +222,12 @@ class ResearchPipeline:
         target_audience: str | None,
         writing_method: str | None,
         sources: list[dict[str, Any]],
+        owner_id: str,
     ) -> str:
         update_workflow_state(
             workflow_id,
             "RESEARCH",
+            owner_id,
         )
         logger.info("Stage: RESEARCH")
         research_notes = self._research(
@@ -216,6 +235,7 @@ class ResearchPipeline:
             context=context,
             target_audience=target_audience,
             writing_method=writing_method,
+            sources=sources,
         )
         save_artifact(
             workflow_id,
@@ -234,10 +254,12 @@ class ResearchPipeline:
         research_notes: str,
         target_audience: str | None,
         writing_method: str | None,
+        owner_id: str,
     ) -> str:
         update_workflow_state(
             workflow_id,
             "WRITING",
+            owner_id,
         )
         logger.info("Stage: WRITING")
         draft = self._write(
@@ -254,6 +276,7 @@ class ResearchPipeline:
         context: str,
         target_audience: str | None,
         writing_method: str | None,
+        sources: list[dict[str, Any]],
     ) -> str:
         return executor.execute(
             agent_name="researcher",
@@ -262,6 +285,7 @@ class ResearchPipeline:
                 "context": context,
                 "target_audience": target_audience,
                 "writing_method": writing_method,
+                "sources": sources,
             },
         )
     def _write(
@@ -285,6 +309,7 @@ class ResearchPipeline:
         context: str,
         generated_answer: str,
         user_query: str,
+        verification_mode: str = "general_knowledge",
     ) -> dict[str, Any]:
         raw = executor.execute(
             agent_name="fact_checker",
@@ -292,6 +317,7 @@ class ResearchPipeline:
                 "user_query": user_query,
                 "context": context,
                 "generated_answer": generated_answer,
+                "verification_mode": verification_mode
             },
             json_output=True,
         )

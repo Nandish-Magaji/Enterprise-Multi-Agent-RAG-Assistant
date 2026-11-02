@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-config
+  namespace: enterprise-rag
+data:
+  GEMINI_GENERATION_MODEL: gemini-2.5-flash
+  GEMINI_EMBEDDING_MODEL: gemini-embedding-001
+  OIDC_ROLE_CLAIM: roles
+  OIDC_REVIEWER_ROLE: reviewer
+  TAVILY_MCP_URL: https://mcp.tavily.com/mcp/
+  TAVILY_SEARCH_DEPTH: basic
+  SQLITE_PATH: /app/backend/database/sqllite.db
+  CHROMA_PERSIST_DIRECTORY: /app/backend/database/chroma
+  CHROMA_COLLECTION_NAME: rag_chunks
+  CORS_ORIGINS: http://localhost:3000
+  BACKEND_INTERNAL_URL: http://rag-backend:8000
+  LOGTO_BASE_URL: http://localhost:3000

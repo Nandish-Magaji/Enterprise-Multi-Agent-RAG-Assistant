@@ -10,7 +10,9 @@ export interface WorkflowSource {
   source_id: string;
   source_title: string;
   citation: string;
-  chunk_index: number;
+  chunk_index?: number;
+  url?: string;
+  source_type?: string;
 }
 
 export interface WorkflowResult {

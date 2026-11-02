@@ -38,9 +38,18 @@ export default function WorkflowSources({
                         </div>
 
                         <div className="mt-2 text-sm text-zinc-600">
-
-                            {source.citation}
-
+                            {source.url || source.citation.startsWith("http") ? (
+                                <a
+                                    href={source.url || source.citation}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="break-all text-blue-700 underline underline-offset-2 hover:text-blue-900 dark:text-blue-300 dark:hover:text-blue-200"
+                                >
+                                    {source.citation}
+                                </a>
+                            ) : (
+                                source.citation
+                            )}
                         </div>
 
                     </div>
